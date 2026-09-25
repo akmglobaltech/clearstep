@@ -5,13 +5,31 @@ const inputError = document.querySelector("#input-error");
 const savedCount = document.querySelector("#saved-count");
 const recentList = document.querySelector("#recent-list");
 const toast = document.querySelector("#toast");
+const sourceLink = document.querySelector("#source-link");
+const sourceBox = document.querySelector("#source-box");
+const savedDialog = document.querySelector("#saved-dialog");
+const savedResults = document.querySelector("#saved-results");
 
 const depthDescriptions = [
   "Simple words, no assumed knowledge",
   "Useful context without the jargon overload",
   "More context, terminology, and edge cases",
 ];
-const sampleText = "Error: connect ECONNREFUSED 127.0.0.1:5432\n\nThe app could not connect to the database. Check that the database server is running and accepting TCP/IP connections.";
+const samples = {
+  error: {
+    mode: "fix",
+    text: "Error: connect ECONNREFUSED 127.0.0.1:5432\n\nThe app could not connect to the database. Check that the database server is running and accepting TCP/IP connections.",
+  },
+  notice: {
+    mode: "next",
+    text: "We couldn't complete your appointment request. Please call the service desk by Friday, 26 September, and have your reference number ready. Requests not confirmed by then may need to be resubmitted.",
+  },
+  steps: {
+    mode: "explain",
+    text: "Before you begin:\n1. Download the latest report.\n2. Check the totals against your statement.\n3. Send the signed copy to the accounts team by 30 September.",
+  },
+};
+const sampleText = samples.error.text;
 let selectedMode = "explain";
 let selectedDepth = 0;
 let sourceType = "text";
@@ -21,7 +39,18 @@ let toastTimer;
 function loadSaved() {
   try {
     const items = JSON.parse(localStorage.getItem("clearstep-saved") || "[]");
-    return Array.isArray(items) ? items : [];
+    return Array.isArray(items)
+      ? items.filter((item) => item && typeof item === "object").map((item, index) => ({
+        ...item,
+        id: item.id || `saved-${index}-${String(item.createdAt || "legacy").replace(/[^a-z\d]/gi, "")}`,
+        title: item.title || makeTitle(item.source || "Saved explanation"),
+        source: item.source || "",
+        sourceLines: Array.isArray(item.sourceLines) ? item.sourceLines : [],
+        steps: Array.isArray(item.steps) ? item.steps : [],
+        completed: Array.isArray(item.completed) ? item.completed : [],
+        reference: typeof item.reference === "string" ? item.reference : "",
+      }))
+      : [];
   } catch {
     return [];
   }
@@ -39,15 +68,87 @@ function updateSavedList() {
     return;
   }
 
-  items.slice(0, 8).forEach((item) => {
+  items.slice(0, 6).forEach((item) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "recent-item";
-    button.textContent = item.title;
+    const title = document.createElement("span");
+    title.textContent = item.title;
+    const mode = document.createElement("small");
+    mode.textContent = { explain: "Explain it", fix: "Help me fix it", next: "Next steps" }[item.mode] || "Saved";
+    button.append(title, mode);
     button.title = item.title;
     button.addEventListener("click", () => showAnswer(item));
     recentList.append(button);
   });
+}
+
+function renderSavedLibrary(query = "") {
+  const items = loadSaved();
+  const normalizedQuery = cleanText(query).toLowerCase();
+  const matches = items.filter((item) => `${item.title} ${item.source} ${item.explanation}`.toLowerCase().includes(normalizedQuery));
+  savedResults.replaceChildren();
+  document.querySelector("#saved-total").textContent = `${items.length} ${items.length === 1 ? "saved item" : "saved items"}`;
+
+  if (!matches.length) {
+    const empty = document.createElement("p");
+    empty.className = "library-empty";
+    empty.textContent = items.length ? "No saved explanations match that search." : "Nothing saved yet. Save an explanation to find it here.";
+    savedResults.append(empty);
+    return;
+  }
+
+  matches.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = "saved-entry";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "saved-entry-open";
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const summary = document.createElement("span");
+    summary.textContent = item.explanation;
+    const metadata = document.createElement("small");
+    const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Saved";
+    metadata.textContent = `${date} · ${{ explain: "Explain it", fix: "Help me fix it", next: "Next steps" }[item.mode] || "Saved"}`;
+    open.append(title, summary, metadata);
+    open.addEventListener("click", () => {
+      showAnswer(item);
+      closeSavedLibrary();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "saved-entry-remove";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", `Remove ${item.title} from saved explanations`);
+    remove.addEventListener("click", () => removeSaved(item.id));
+    row.append(open, remove);
+    savedResults.append(row);
+  });
+}
+
+function openSavedLibrary() {
+  renderSavedLibrary(document.querySelector("#saved-search").value);
+  if (!savedDialog.open) savedDialog.showModal();
+  document.querySelector("#saved-search").focus();
+}
+
+function closeSavedLibrary() {
+  if (savedDialog.open) savedDialog.close();
+}
+
+function removeSaved(id) {
+  const items = loadSaved().filter((item) => item.id !== id);
+  try {
+    localStorage.setItem("clearstep-saved", JSON.stringify(items));
+  } catch {
+    showToast("Could not update saved explanations in this browser");
+    return;
+  }
+  updateSavedList();
+  renderSavedLibrary(document.querySelector("#saved-search").value);
+  if (currentAnswer?.id === id) updateSaveButton(false);
+  showToast("Removed from your saved explanations");
 }
 
 function cleanText(value) {
@@ -60,15 +161,16 @@ function makeTitle(text) {
 }
 
 function identifyLines(text) {
-  const matches = text.split(/\n+/).map(cleanText).filter((line) =>
-    /\b(https?:\/\/|error|failed|warning|must|should|do not|don't|step\s*\d|\d+[.)])|[.!?]$|:\s/.test(line),
+  const lines = text.split(/\n+/).map(cleanText).filter(Boolean);
+  const matches = lines.filter((line) =>
+    /\b(error|failed|warning|must|should|required|deadline|due|by\s+(?:mon|tue|wed|thu|fri|sat|sun|\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|please|step\s*\d|\d+[.)])|[.!?]$|:\s/i.test(line),
   );
-  const unique = [...new Set(matches)];
-  return unique.slice(0, 4);
+  return [...new Set(matches.length ? matches : lines)].slice(0, 4);
 }
 
-function makeAnswer(text) {
+function makeAnswer(text, reference = "") {
   const mode = selectedMode;
+  const lowerText = text.toLowerCase();
   const isTechnical = /error|exception|failed|refused|denied|undefined|not found|timeout|\b\d{3}\b/i.test(text);
   const depth = selectedDepth;
   const title = mode === "fix" ? "A sensible place to start" : mode === "next" ? "Your next steps" : "The short version";
@@ -85,6 +187,13 @@ function makeAnswer(text) {
       "Retry the action. If it still fails, check the service logs and connection settings together.",
     ];
     if (depth === 2) extra = "ECONNREFUSED is a TCP connection error: the request reached the target machine, but there was no listener accepting connections on that port. It is different from a timeout, which usually means no response arrived.";
+  } else if (isTechnical && /permission denied|access denied|forbidden/.test(lowerText)) {
+    explanation = "The operation reached something it tried to use, but the current account or process was not allowed to access it. This points to an access rule, ownership, or sign-in state rather than a missing item.";
+    steps = ["Check which account or process is performing the action.", "Confirm that it has permission for the named file, service, or resource.", "Retry after access is confirmed; avoid changing permissions broadly just to silence the message."];
+    if (depth === 2) extra = "On a computer, access can depend on both the signed-in user and the process's permissions. A broad permission change may expose more than intended.";
+  } else if (isTechnical && /timeout|timed out/.test(lowerText)) {
+    explanation = "The requested operation took longer than the allowed wait, so it stopped before getting a response. The cause could be a slow service, network delay, or a wait limit that is too short.";
+    steps = ["Retry once and check whether the service is responding.", "Check network or service status around the time this happened.", "If it repeats, note how long it waits and share the full error with the service owner."];
   } else if (isTechnical) {
     explanation = "This message signals that an operation did not complete as expected. The key is to identify what was being attempted, then check the setting, input, or service named in the message.";
     steps = [
@@ -94,12 +203,13 @@ function makeAnswer(text) {
     ];
     if (depth === 2) extra = "Error messages are clues rather than complete diagnoses. The surrounding log lines and the change immediately before the failure often narrow down the cause.";
   } else {
-    explanation = `This text is asking you to pay attention to ${sourceLines[0] ? `“${sourceLines[0].slice(0, 100)}${sourceLines[0].length > 100 ? "…" : ""}”` : "the information it contains"}. The useful part is separating what it says from what it expects you to do.`;
-    steps = [
-      "Identify the specific action or decision this information is asking for.",
-      "Check any dates, requirements, or terms that could change what you need to do.",
-      "If something is still unclear, ask the sender to clarify that point before acting.",
-    ];
+    const actionLines = text.split(/\n+/).map(cleanText).filter((line) => /\b(please|must|need to|required|by\s+(?:mon|tue|wed|thu|fri|sat|sun|\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|deadline|due|bring|submit|sign|call|send|complete|respond|before)\b/i.test(line));
+    explanation = actionLines.length
+      ? "This looks like it contains a request or requirement. I’ve pulled out the lines that may affect what you need to do; confirm the exact details against the original message."
+      : `The key idea appears to be “${sourceLines[0].slice(0, 100)}${sourceLines[0].length > 100 ? "…" : ""}”. Separate what the text says from what it asks you to do, and check any dates or requirements before acting.`;
+    steps = actionLines.length
+      ? ["Confirm any date, amount, or requirement in the original message.", "Gather the information or documents it asks for.", "Complete the requested action and keep a copy or confirmation."]
+      : ["Identify the specific action or decision this information is asking for.", "Check any dates, requirements, or terms that could change what you need to do.", "Ask the sender to clarify anything that remains uncertain before acting."];
     if (depth === 2) extra = "For formal, financial, legal, or medical instructions, verify important details with the organization or a qualified professional before relying on a summary.";
   }
 
@@ -126,11 +236,17 @@ function makeAnswer(text) {
     steps,
     sourceLines,
     extra,
+    reference,
+    completed: [],
     createdAt: new Date().toISOString(),
   };
 }
 
 function showAnswer(answer) {
+  answer.completed = Array.isArray(answer.completed) ? answer.completed : [];
+  answer.sourceLines = Array.isArray(answer.sourceLines) ? answer.sourceLines : [];
+  answer.steps = Array.isArray(answer.steps) ? answer.steps : [];
+  answer.reference = typeof answer.reference === "string" ? answer.reference : "";
   currentAnswer = answer;
   emptyAnswer.hidden = true;
   answerContent.hidden = false;
@@ -145,6 +261,16 @@ function showAnswer(answer) {
   const explanation = document.createElement("p");
   explanation.textContent = answer.explanation;
   answerContent.append(mode, heading, explanation);
+
+  if (answer.reference) {
+    const reference = document.createElement("a");
+    reference.className = "answer-reference";
+    reference.href = answer.reference;
+    reference.target = "_blank";
+    reference.rel = "noopener noreferrer";
+    reference.textContent = `Source link · ${new URL(answer.reference).hostname}`;
+    answerContent.append(reference);
+  }
 
   if (answer.sourceLines.length) {
     const sourceSection = document.createElement("section");
@@ -168,20 +294,53 @@ function showAnswer(answer) {
 
   const stepsSection = document.createElement("section");
   stepsSection.className = "answer-section";
-  const stepsHeading = document.createElement("h3");
-  stepsHeading.innerHTML = "<span aria-hidden=\"true\">↗</span> Try this next";
+  const progressCount = document.createElement("span");
+  progressCount.className = "progress-count";
+  const progressHeading = document.createElement("div");
+  progressHeading.className = "steps-heading";
+  const stepsTitle = document.createElement("h3");
+  stepsTitle.innerHTML = "<span aria-hidden=\"true\">↗</span> Your next moves";
+  progressHeading.append(stepsTitle, progressCount);
+  const progressTrack = document.createElement("div");
+  progressTrack.className = "progress-track";
+  progressTrack.setAttribute("role", "progressbar");
+  progressTrack.setAttribute("aria-label", "Completed next steps");
+  progressTrack.setAttribute("aria-valuemin", "0");
+  progressTrack.setAttribute("aria-valuemax", String(answer.steps.length));
+  const progressFill = document.createElement("span");
+  progressFill.className = "progress-fill";
+  progressTrack.append(progressFill);
   const stepsList = document.createElement("ol");
+  stepsList.className = "checklist";
+  const refreshProgress = () => {
+    const complete = answer.completed.filter(Boolean).length;
+    progressCount.textContent = `${complete}/${answer.steps.length} done`;
+    progressTrack.setAttribute("aria-valuenow", String(complete));
+    progressFill.style.width = `${answer.steps.length ? (complete / answer.steps.length) * 100 : 0}%`;
+  };
   answer.steps.forEach((step, index) => {
     const item = document.createElement("li");
-    const marker = document.createElement("span");
-    marker.className = "list-marker";
-    marker.textContent = String(index + 1);
-    const text = document.createElement("span");
+    item.className = "checklist-item";
+    const checkbox = document.createElement("input");
+    checkbox.id = `step-${answer.id}-${index}`;
+    checkbox.type = "checkbox";
+    checkbox.checked = Boolean(answer.completed[index]);
+    checkbox.setAttribute("aria-label", `Mark step ${index + 1} complete`);
+    const text = document.createElement("label");
+    text.htmlFor = checkbox.id;
     text.textContent = step;
-    item.append(marker, text);
+    item.classList.toggle("is-complete", checkbox.checked);
+    checkbox.addEventListener("change", () => {
+      answer.completed[index] = checkbox.checked;
+      item.classList.toggle("is-complete", checkbox.checked);
+      refreshProgress();
+      persistAnswerProgress(answer);
+    });
+    item.append(checkbox, text);
     stepsList.append(item);
   });
-  stepsSection.append(stepsHeading, stepsList);
+  stepsSection.append(progressHeading, progressTrack, stepsList);
+  refreshProgress();
   answerContent.append(stepsSection);
 
   if (answer.extra) {
@@ -200,14 +359,16 @@ function showAnswer(answer) {
   const save = document.createElement("button");
   save.type = "button";
   save.className = "save-button";
-  save.textContent = "Save explanation";
+  save.id = "save-answer";
+  save.textContent = isAnswerSaved(answer) ? "Saved to library" : "Save to library";
+  save.classList.toggle("is-saved", isAnswerSaved(answer));
   save.addEventListener("click", saveCurrentAnswer);
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "copy-button";
-  copy.textContent = "Copy steps";
+  copy.textContent = "Copy explanation";
   copy.addEventListener("click", async () => {
-    const text = `${answer.heading}\n\n${answer.explanation}\n\n${answer.steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}`;
+    const text = `${answer.heading}\n\n${answer.explanation}\n\n${answer.steps.map((step, index) => `${answer.completed[index] ? "[x]" : "[ ]"} ${index + 1}. ${step}`).join("\n")}`;
     try {
       await navigator.clipboard.writeText(text);
       showToast("Steps copied to clipboard");
@@ -220,22 +381,45 @@ function showAnswer(answer) {
 
   const disclaimer = document.createElement("p");
   disclaimer.className = "answer-disclaimer";
-  disclaimer.textContent = "Local first-pass preview based only on the text you provided. Check important details with the original source.";
+  disclaimer.textContent = "On-device first-pass read, not professional advice. Check important details against the original source.";
   answerContent.append(disclaimer);
+}
+
+function isAnswerSaved(answer) {
+  return loadSaved().some((item) => item.id === answer.id);
+}
+
+function updateSaveButton(saved) {
+  const button = document.querySelector("#save-answer");
+  if (!button) return;
+  button.textContent = saved ? "Saved to library" : "Save to library";
+  button.classList.toggle("is-saved", saved);
+}
+
+function persistAnswerProgress(answer) {
+  const items = loadSaved();
+  const index = items.findIndex((item) => item.id === answer.id);
+  if (index < 0) return;
+  items[index] = answer;
+  try {
+    localStorage.setItem("clearstep-saved", JSON.stringify(items));
+    updateSavedList();
+  } catch {
+    showToast("Progress could not be saved in this browser");
+  }
 }
 
 function saveCurrentAnswer() {
   if (!currentAnswer) return;
   const items = loadSaved();
-  if (items.some((item) => item.source === currentAnswer.source && item.mode === currentAnswer.mode)) {
-    showToast("This explanation is already saved");
-    return;
-  }
-  items.unshift(currentAnswer);
+  const existing = items.findIndex((item) => item.id === currentAnswer.id);
+  if (existing >= 0) items[existing] = currentAnswer;
+  else items.unshift(currentAnswer);
   try {
     localStorage.setItem("clearstep-saved", JSON.stringify(items.slice(0, 30)));
     updateSavedList();
-    showToast("Saved on this device");
+    updateSaveButton(true);
+    showToast(existing >= 0 ? "Saved explanation updated" : "Saved on this device");
   } catch {
     showToast("Could not save in this browser");
   }
@@ -249,8 +433,64 @@ function showToast(message) {
 }
 
 function updateCharacterCount() {
-  const count = sourceInput.value.length;
-  document.querySelector("#char-count").textContent = `${count.toLocaleString()} ${count === 1 ? "character" : "characters"}`;
+  const text = sourceInput.value.trim();
+  const words = text ? text.split(/\s+/).length : 0;
+  document.querySelector("#char-count").textContent = `${words.toLocaleString()} ${words === 1 ? "word" : "words"} · ${sourceInput.value.length.toLocaleString()} characters`;
+}
+
+function setSourceType(type) {
+  sourceType = type;
+  document.querySelectorAll(".source-tab").forEach((item) => {
+    const active = item.dataset.source === type;
+    item.classList.toggle("is-selected", active);
+    item.setAttribute("aria-pressed", String(active));
+  });
+  const isLink = type === "link";
+  document.querySelector("#link-field").hidden = !isLink;
+  document.querySelector("#link-note").hidden = !isLink;
+  sourceInput.setAttribute("aria-label", isLink ? "Text from the linked page to understand" : "Text to understand");
+  document.querySelector("#source-hint").textContent = isLink ? "Add the page text below" : "Paste or type something that feels unclear";
+}
+
+async function loadTextFile(file) {
+  if (!file) return;
+  if (!/\.(txt|md|markdown|log|csv|json)$/i.test(file.name) && !file.type.startsWith("text/")) {
+    showToast("Choose a text, Markdown, CSV, JSON, or log file");
+    return;
+  }
+  if (file.size > 1_000_000) {
+    showToast("Files must be smaller than 1 MB");
+    return;
+  }
+  try {
+    const text = await file.text();
+    if (text.length > 40000) {
+      showToast("This file is over the 40,000 character limit");
+      return;
+    }
+    sourceInput.value = text;
+    updateCharacterCount();
+    inputError.textContent = "";
+    showToast(`Added ${file.name}`);
+    sourceInput.focus();
+  } catch {
+    showToast("Could not read that file");
+  }
+}
+
+function useExample(name) {
+  const sample = samples[name] || samples.error;
+  sourceInput.value = sample.text;
+  sourceLink.value = "";
+  setSourceType("text");
+  selectedMode = sample.mode;
+  document.querySelectorAll(".mode-option").forEach((item) => {
+    const active = item.dataset.mode === selectedMode;
+    item.classList.toggle("is-selected", active);
+    item.setAttribute("aria-pressed", String(active));
+  });
+  updateCharacterCount();
+  showAnswer(makeAnswer(sample.text));
 }
 
 document.querySelectorAll(".mode-option").forEach((button) => {
@@ -278,16 +518,7 @@ document.querySelectorAll(".depth-option").forEach((button) => {
 
 document.querySelectorAll(".source-tab").forEach((button) => {
   button.addEventListener("click", () => {
-    sourceType = button.dataset.source;
-    document.querySelectorAll(".source-tab").forEach((item) => {
-      const active = item === button;
-      item.classList.toggle("is-selected", active);
-      item.setAttribute("aria-pressed", String(active));
-    });
-    const isLink = sourceType === "link";
-    sourceInput.placeholder = isLink ? "Paste a link, then add the relevant text below…" : "Paste an error, confusing message, or instructions…";
-    document.querySelector("#source-hint").textContent = isLink ? "Links are kept as a reference; paste text to analyze" : "Paste or type anything that feels unclear";
-    sourceInput.setAttribute("aria-label", isLink ? "Link and text to understand" : "Text to understand");
+    setSourceType(button.dataset.source);
     sourceInput.focus();
   });
 });
@@ -299,6 +530,7 @@ sourceInput.addEventListener("input", () => {
 
 document.querySelector("#clear-input").addEventListener("click", () => {
   sourceInput.value = "";
+  sourceLink.value = "";
   updateCharacterCount();
   inputError.textContent = "";
   sourceInput.focus();
@@ -311,35 +543,85 @@ document.querySelector("#make-clear").addEventListener("click", () => {
     sourceInput.focus();
     return;
   }
-  if (/^https?:\/\/\S+$/i.test(text)) {
-    inputError.textContent = "Paste the relevant page text too; this preview cannot read links yet.";
+  let reference = "";
+  if (sourceLink.value.trim()) {
+    try {
+      const parsed = new URL(sourceLink.value.trim());
+      if (!/^https?:$/.test(parsed.protocol)) throw new Error("Unsupported protocol");
+      reference = parsed.href;
+    } catch {
+      inputError.textContent = "Enter a valid http or https link.";
+      sourceLink.focus();
+      return;
+    }
+  }
+  if (sourceType === "link" && !reference) {
+    inputError.textContent = "Add a page link, or switch back to Text.";
+    sourceLink.focus();
+    return;
+  }
+  if (sourceType === "link" && !text) {
+    inputError.textContent = "Paste the page text too; links are kept as a reference, not fetched.";
     sourceInput.focus();
     return;
   }
   inputError.textContent = "";
-  showAnswer(makeAnswer(sourceInput.value));
+  showAnswer(makeAnswer(sourceInput.value, reference));
 });
 
 document.querySelector("#try-sample").addEventListener("click", () => {
-  sourceInput.value = sampleText;
-  sourceType = "text";
-  document.querySelectorAll(".source-tab").forEach((item) => {
-    const active = item.dataset.source === "text";
-    item.classList.toggle("is-selected", active);
-    item.setAttribute("aria-pressed", String(active));
-  });
-  sourceInput.placeholder = "Paste an error, confusing message, or instructions…";
-  document.querySelector("#source-hint").textContent = "Paste or type anything that feels unclear";
-  sourceInput.setAttribute("aria-label", "Text to understand");
-  updateCharacterCount();
-  showAnswer(makeAnswer(sampleText));
+  useExample("error");
 });
 
-document.querySelector("#saved-nav").addEventListener("click", () => {
-  const first = loadSaved()[0];
-  if (first) showAnswer(first);
-  else showToast("Your saved explanations will appear here");
+document.querySelectorAll(".example-chip").forEach((button) => {
+  button.addEventListener("click", () => useExample(button.dataset.example));
 });
-document.querySelector("#workspace-nav").addEventListener("click", () => sourceInput.focus());
+
+document.querySelector("#file-input").addEventListener("change", (event) => {
+  loadTextFile(event.target.files[0]);
+  event.target.value = "";
+});
+
+sourceBox.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  sourceBox.classList.add("is-dragging");
+});
+sourceBox.addEventListener("dragleave", (event) => {
+  if (!sourceBox.contains(event.relatedTarget)) sourceBox.classList.remove("is-dragging");
+});
+sourceBox.addEventListener("drop", (event) => {
+  event.preventDefault();
+  sourceBox.classList.remove("is-dragging");
+  loadTextFile(event.dataTransfer.files[0]);
+});
+
+document.querySelector("#paste-input").addEventListener("click", async () => {
+  try {
+    sourceInput.value = await navigator.clipboard.readText();
+    updateCharacterCount();
+    inputError.textContent = "";
+    sourceInput.focus();
+  } catch {
+    showToast("Clipboard access is unavailable; paste with your keyboard instead");
+  }
+});
+
+document.querySelector("#saved-nav").addEventListener("click", openSavedLibrary);
+document.querySelector("#close-saved").addEventListener("click", closeSavedLibrary);
+document.querySelector("#saved-search").addEventListener("input", (event) => renderSavedLibrary(event.target.value));
+savedDialog.addEventListener("click", (event) => {
+  if (event.target === savedDialog) closeSavedLibrary();
+});
+document.querySelector("#workspace-nav").addEventListener("click", () => {
+  document.querySelector("#workspace-nav").classList.add("is-active");
+  document.querySelector("#saved-nav").classList.remove("is-active");
+  sourceInput.focus();
+});
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    document.querySelector("#make-clear").click();
+  }
+});
 
 updateSavedList();
