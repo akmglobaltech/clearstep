@@ -1,13 +1,17 @@
 # Clearstep
 
-Clearstep turns unfamiliar messages, errors, and instructions into a plain-language explanation and practical next steps.
+Clearstep helps visitors find locally mapped shops for phones, laptops, and accessories.
 
 ## Try it
 
-Open `index.html` in a browser. No build step or package installation is needed.
+Open `index.html` in a modern browser. Search a city and country, choose a category and radius, or opt in to use the browser's current location. Results include map position, mapped contact details, directions, source records, and each shop record's last edit date. Shops can be saved in local browser storage.
 
-Choose **Explain it**, **Help me fix it**, or **What to do next**, then set the explanation depth. Paste text, add a page link with its relevant text, import a text/Markdown/log file, or try a sample. Check off next steps as you work, then save explanations to search and revisit them later. Saved content and progress stay in the browser's local storage.
+## Data and limits
 
-## Prototype notes
+Place boundaries come from OpenStreetMap's Nominatim service. Shop records and map tiles come from OpenStreetMap/Overpass. The app queries only phone, computer, and electronics shop tags inside the selected city's mapped boundary, then applies the chosen distance from that city centre. Coverage depends on community mapping and can be incomplete or out of date. Map edit dates describe record edits, not a shop's current operating status.
 
-This is a local, rule-based preview, not an AI service. It does not upload pasted text or files. Link mode keeps a URL as a reference but cannot fetch or analyze the linked page; paste the relevant page text alongside it. Its interpretations are first-pass guidance, so check important details against the original source.
+OpenStreetMap does not provide live inventory or prices. A result is a mapped place, not confirmation that it sells a particular model or has stock today; visitors should call ahead. Search endpoints and map tiles have their own usage policies and rate limits. The app caches results in the browser for ten minutes to reduce repeat requests.
+
+OpenStreetMap data is available under the ODbL. Attribution appears alongside the map; see <https://www.openstreetmap.org/copyright>. Location is requested only after the visitor chooses **Use my location**. Saved shops remain in that browser.
+
+The static MVP queries public Nominatim and Overpass endpoints directly and caches map results for ten minutes per browser session. These shared endpoints may throttle or reject high-volume use; they are not an unlimited production API. A larger launch should add a compliant shared cache/backend or a data provider with service guarantees.

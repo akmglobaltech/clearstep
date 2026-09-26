@@ -1,627 +1,611 @@
-const sourceInput = document.querySelector("#source-input");
-const answerContent = document.querySelector("#answer-content");
-const emptyAnswer = document.querySelector("#empty-answer");
-const inputError = document.querySelector("#input-error");
+const searchForm = document.querySelector("#search-form");
+const locationInput = document.querySelector("#location-input");
+const radiusSelect = document.querySelector("#radius-select");
+const searchButton = document.querySelector("#search-button");
+const searchError = document.querySelector("#search-error");
+const resultsTitle = document.querySelector("#results-title");
+const resultsMeta = document.querySelector("#results-meta");
+const resultsTools = document.querySelector("#results-tools");
+const resultsList = document.querySelector("#results-list");
+const emptyState = document.querySelector("#empty-state");
+const loadingState = document.querySelector("#loading-state");
+const mapPlaceLabel = document.querySelector("#map-place-label");
+const mapPlaceholder = document.querySelector("#map-placeholder");
 const savedCount = document.querySelector("#saved-count");
-const recentList = document.querySelector("#recent-list");
 const toast = document.querySelector("#toast");
-const sourceLink = document.querySelector("#source-link");
-const sourceBox = document.querySelector("#source-box");
-const savedDialog = document.querySelector("#saved-dialog");
-const savedResults = document.querySelector("#saved-results");
 
-const depthDescriptions = [
-  "Simple words, no assumed knowledge",
-  "Useful context without the jargon overload",
-  "More context, terminology, and edge cases",
-];
-const samples = {
-  error: {
-    mode: "fix",
-    text: "Error: connect ECONNREFUSED 127.0.0.1:5432\n\nThe app could not connect to the database. Check that the database server is running and accepting TCP/IP connections.",
-  },
-  notice: {
-    mode: "next",
-    text: "We couldn't complete your appointment request. Please call the service desk by Friday, 26 September, and have your reference number ready. Requests not confirmed by then may need to be resubmitted.",
-  },
-  steps: {
-    mode: "explain",
-    text: "Before you begin:\n1. Download the latest report.\n2. Check the totals against your statement.\n3. Send the signed copy to the accounts team by 30 September.",
-  },
+const geocoderUrl = "https://nominatim.openstreetmap.org";
+const overpassUrl = "https://overpass-api.de/api/interpreter";
+const cacheDuration = 10 * 60 * 1000;
+const categories = {
+  phones: { label: "phone and electronics shops", tags: ["mobile_phone", "electronics"], primary: "mobile_phone" },
+  laptops: { label: "laptop and computer shops", tags: ["computer", "electronics"], primary: "computer" },
+  accessories: { label: "phone, computer, and electronics shops", tags: ["mobile_phone", "computer", "electronics"], primary: "mobile_phone" },
 };
-const sampleText = samples.error.text;
-let selectedMode = "explain";
-let selectedDepth = 0;
-let sourceType = "text";
-let currentAnswer = null;
-let toastTimer;
 
-function loadSaved() {
+let selectedCategory = "phones";
+let currentPlace = null;
+let currentResults = [];
+let nearbyResults = [];
+let nearbyFetchedAt = 0;
+let nearbyCached = false;
+let currentMarkers = [];
+let currentView = "nearby";
+let map = null;
+let markerLayer = null;
+let toastTimer;
+let lastGeocoderRequest = 0;
+let activeRequest = false;
+
+function readSaved() {
   try {
-    const items = JSON.parse(localStorage.getItem("clearstep-saved") || "[]");
-    return Array.isArray(items)
-      ? items.filter((item) => item && typeof item === "object").map((item, index) => ({
-        ...item,
-        id: item.id || `saved-${index}-${String(item.createdAt || "legacy").replace(/[^a-z\d]/gi, "")}`,
-        title: item.title || makeTitle(item.source || "Saved explanation"),
-        source: item.source || "",
-        sourceLines: Array.isArray(item.sourceLines) ? item.sourceLines : [],
-        steps: Array.isArray(item.steps) ? item.steps : [],
-        completed: Array.isArray(item.completed) ? item.completed : [],
-        reference: typeof item.reference === "string" ? item.reference : "",
-      }))
-      : [];
+    const saved = JSON.parse(localStorage.getItem("clearstep-shop-saves") || "[]");
+    return Array.isArray(saved) ? saved : [];
   } catch {
     return [];
   }
 }
 
-function updateSavedList() {
-  const items = loadSaved();
-  savedCount.textContent = String(items.length);
-  recentList.replaceChildren();
-  if (!items.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-recent";
-    empty.innerHTML = "Your saved explanations<br />will show up here.";
-    recentList.append(empty);
-    return;
-  }
+function updateSavedCount() {
+  savedCount.textContent = String(readSaved().length);
+}
 
-  items.slice(0, 6).forEach((item) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "recent-item";
-    const title = document.createElement("span");
-    title.textContent = item.title;
-    const mode = document.createElement("small");
-    mode.textContent = { explain: "Explain it", fix: "Help me fix it", next: "Next steps" }[item.mode] || "Saved";
-    button.append(title, mode);
-    button.title = item.title;
-    button.addEventListener("click", () => showAnswer(item));
-    recentList.append(button);
+function setCategory(category) {
+  selectedCategory = category;
+  document.querySelectorAll(".category-option").forEach((button) => {
+    const active = button.dataset.category === category;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
 }
 
-function renderSavedLibrary(query = "") {
-  const items = loadSaved();
-  const normalizedQuery = cleanText(query).toLowerCase();
-  const matches = items.filter((item) => `${item.title} ${item.source} ${item.explanation}`.toLowerCase().includes(normalizedQuery));
-  savedResults.replaceChildren();
-  document.querySelector("#saved-total").textContent = `${items.length} ${items.length === 1 ? "saved item" : "saved items"}`;
-
-  if (!matches.length) {
-    const empty = document.createElement("p");
-    empty.className = "library-empty";
-    empty.textContent = items.length ? "No saved explanations match that search." : "Nothing saved yet. Save an explanation to find it here.";
-    savedResults.append(empty);
-    return;
-  }
-
-  matches.forEach((item) => {
-    const row = document.createElement("article");
-    row.className = "saved-entry";
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "saved-entry-open";
-    const title = document.createElement("strong");
-    title.textContent = item.title;
-    const summary = document.createElement("span");
-    summary.textContent = item.explanation;
-    const metadata = document.createElement("small");
-    const date = item.createdAt ? new Date(item.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Saved";
-    metadata.textContent = `${date} · ${{ explain: "Explain it", fix: "Help me fix it", next: "Next steps" }[item.mode] || "Saved"}`;
-    open.append(title, summary, metadata);
-    open.addEventListener("click", () => {
-      showAnswer(item);
-      closeSavedLibrary();
-    });
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "saved-entry-remove";
-    remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove ${item.title} from saved explanations`);
-    remove.addEventListener("click", () => removeSaved(item.id));
-    row.append(open, remove);
-    savedResults.append(row);
-  });
-}
-
-function openSavedLibrary() {
-  renderSavedLibrary(document.querySelector("#saved-search").value);
-  if (!savedDialog.open) savedDialog.showModal();
-  document.querySelector("#saved-search").focus();
-}
-
-function closeSavedLibrary() {
-  if (savedDialog.open) savedDialog.close();
-}
-
-function removeSaved(id) {
-  const items = loadSaved().filter((item) => item.id !== id);
-  try {
-    localStorage.setItem("clearstep-saved", JSON.stringify(items));
-  } catch {
-    showToast("Could not update saved explanations in this browser");
-    return;
-  }
-  updateSavedList();
-  renderSavedLibrary(document.querySelector("#saved-search").value);
-  if (currentAnswer?.id === id) updateSaveButton(false);
-  showToast("Removed from your saved explanations");
-}
-
-function cleanText(value) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function makeTitle(text) {
-  const firstLine = text.split(/\n/).map(cleanText).find(Boolean) || "Saved explanation";
-  return firstLine.length > 43 ? `${firstLine.slice(0, 40).trimEnd()}…` : firstLine;
-}
-
-function identifyLines(text) {
-  const lines = text.split(/\n+/).map(cleanText).filter(Boolean);
-  const matches = lines.filter((line) =>
-    /\b(error|failed|warning|must|should|required|deadline|due|by\s+(?:mon|tue|wed|thu|fri|sat|sun|\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|please|step\s*\d|\d+[.)])|[.!?]$|:\s/i.test(line),
-  );
-  return [...new Set(matches.length ? matches : lines)].slice(0, 4);
-}
-
-function makeAnswer(text, reference = "") {
-  const mode = selectedMode;
-  const lowerText = text.toLowerCase();
-  const isTechnical = /error|exception|failed|refused|denied|undefined|not found|timeout|\b\d{3}\b/i.test(text);
-  const depth = selectedDepth;
-  const title = mode === "fix" ? "A sensible place to start" : mode === "next" ? "Your next steps" : "The short version";
-  const sourceLines = identifyLines(text);
-  let explanation;
-  let steps;
-  let extra = "";
-
-  if (isTechnical && /econnrefused|connection refused/i.test(text)) {
-    explanation = "The app tried to reach a service, but nothing accepted the connection at that address. This usually means the service is stopped, or the address or port does not match where it is listening.";
-    steps = [
-      "Start the database or service the app is trying to reach.",
-      "Check the host and port in the app's connection settings. The message points to port 5432 on this machine.",
-      "Retry the action. If it still fails, check the service logs and connection settings together.",
-    ];
-    if (depth === 2) extra = "ECONNREFUSED is a TCP connection error: the request reached the target machine, but there was no listener accepting connections on that port. It is different from a timeout, which usually means no response arrived.";
-  } else if (isTechnical && /permission denied|access denied|forbidden/.test(lowerText)) {
-    explanation = "The operation reached something it tried to use, but the current account or process was not allowed to access it. This points to an access rule, ownership, or sign-in state rather than a missing item.";
-    steps = ["Check which account or process is performing the action.", "Confirm that it has permission for the named file, service, or resource.", "Retry after access is confirmed; avoid changing permissions broadly just to silence the message."];
-    if (depth === 2) extra = "On a computer, access can depend on both the signed-in user and the process's permissions. A broad permission change may expose more than intended.";
-  } else if (isTechnical && /timeout|timed out/.test(lowerText)) {
-    explanation = "The requested operation took longer than the allowed wait, so it stopped before getting a response. The cause could be a slow service, network delay, or a wait limit that is too short.";
-    steps = ["Retry once and check whether the service is responding.", "Check network or service status around the time this happened.", "If it repeats, note how long it waits and share the full error with the service owner."];
-  } else if (isTechnical) {
-    explanation = "This message signals that an operation did not complete as expected. The key is to identify what was being attempted, then check the setting, input, or service named in the message.";
-    steps = [
-      "Look at the line immediately before this message to see what action triggered it.",
-      "Check the specific file, value, or service named in the message, including spelling and configuration.",
-      "Try the same action again. If it fails, capture the full message and the step that triggered it.",
-    ];
-    if (depth === 2) extra = "Error messages are clues rather than complete diagnoses. The surrounding log lines and the change immediately before the failure often narrow down the cause.";
-  } else {
-    const actionLines = text.split(/\n+/).map(cleanText).filter((line) => /\b(please|must|need to|required|by\s+(?:mon|tue|wed|thu|fri|sat|sun|\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|deadline|due|bring|submit|sign|call|send|complete|respond|before)\b/i.test(line));
-    explanation = actionLines.length
-      ? "This looks like it contains a request or requirement. I’ve pulled out the lines that may affect what you need to do; confirm the exact details against the original message."
-      : `The key idea appears to be “${sourceLines[0].slice(0, 100)}${sourceLines[0].length > 100 ? "…" : ""}”. Separate what the text says from what it asks you to do, and check any dates or requirements before acting.`;
-    steps = actionLines.length
-      ? ["Confirm any date, amount, or requirement in the original message.", "Gather the information or documents it asks for.", "Complete the requested action and keep a copy or confirmation."]
-      : ["Identify the specific action or decision this information is asking for.", "Check any dates, requirements, or terms that could change what you need to do.", "Ask the sender to clarify anything that remains uncertain before acting."];
-    if (depth === 2) extra = "For formal, financial, legal, or medical instructions, verify important details with the organization or a qualified professional before relying on a summary.";
-  }
-
-  if (mode === "fix") {
-    explanation = isTechnical
-      ? "Start with the simplest likely cause, then check one thing at a time. This message is a useful clue, but it may not identify the root cause by itself."
-      : "Work through the instructions one requirement at a time. If a detail is missing or the request seems inconsistent, confirm it with the source before you proceed.";
-  } else if (mode === "next") {
-    explanation = isTechnical
-      ? "Here is a low-risk sequence: check whether the service is available, verify its settings, then retry and capture any new error."
-      : "Here is a practical order: identify the requested action, verify the details that affect it, then follow up on anything that remains unclear.";
-  }
-
-  if (depth === 0) steps = steps.slice(0, 2);
-  if (mode === "explain") steps = steps.slice(0, depth === 0 ? 2 : 3);
-  return {
-    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
-    title: makeTitle(text),
-    source: text,
-    mode,
-    depth,
-    heading: title,
-    explanation,
-    steps,
-    sourceLines,
-    extra,
-    reference,
-    completed: [],
-    createdAt: new Date().toISOString(),
-  };
-}
-
-function showAnswer(answer) {
-  answer.completed = Array.isArray(answer.completed) ? answer.completed : [];
-  answer.sourceLines = Array.isArray(answer.sourceLines) ? answer.sourceLines : [];
-  answer.steps = Array.isArray(answer.steps) ? answer.steps : [];
-  answer.reference = typeof answer.reference === "string" ? answer.reference : "";
-  currentAnswer = answer;
-  emptyAnswer.hidden = true;
-  answerContent.hidden = false;
-  answerContent.replaceChildren();
-
-  const modeNames = { explain: "EXPLAIN IT", fix: "HELP ME FIX IT", next: "WHAT TO DO NEXT" };
-  const mode = document.createElement("div");
-  mode.className = "answer-mode";
-  mode.textContent = modeNames[answer.mode] || modeNames.explain;
-  const heading = document.createElement("h2");
-  heading.textContent = answer.heading;
-  const explanation = document.createElement("p");
-  explanation.textContent = answer.explanation;
-  answerContent.append(mode, heading, explanation);
-
-  if (answer.reference) {
-    const reference = document.createElement("a");
-    reference.className = "answer-reference";
-    reference.href = answer.reference;
-    reference.target = "_blank";
-    reference.rel = "noopener noreferrer";
-    reference.textContent = `Source link · ${new URL(answer.reference).hostname}`;
-    answerContent.append(reference);
-  }
-
-  if (answer.sourceLines.length) {
-    const sourceSection = document.createElement("section");
-    sourceSection.className = "answer-section";
-    const sourceHeading = document.createElement("h3");
-    sourceHeading.innerHTML = "<span aria-hidden=\"true\">↳</span> What stands out";
-    const sourceList = document.createElement("ul");
-    answer.sourceLines.slice(0, answer.depth === 0 ? 1 : 3).forEach((line) => {
-      const item = document.createElement("li");
-      const marker = document.createElement("span");
-      marker.className = "list-marker";
-      marker.textContent = "•";
-      const text = document.createElement("span");
-      text.textContent = line;
-      item.append(marker, text);
-      sourceList.append(item);
-    });
-    sourceSection.append(sourceHeading, sourceList);
-    answerContent.append(sourceSection);
-  }
-
-  const stepsSection = document.createElement("section");
-  stepsSection.className = "answer-section";
-  const progressCount = document.createElement("span");
-  progressCount.className = "progress-count";
-  const progressHeading = document.createElement("div");
-  progressHeading.className = "steps-heading";
-  const stepsTitle = document.createElement("h3");
-  stepsTitle.innerHTML = "<span aria-hidden=\"true\">↗</span> Your next moves";
-  progressHeading.append(stepsTitle, progressCount);
-  const progressTrack = document.createElement("div");
-  progressTrack.className = "progress-track";
-  progressTrack.setAttribute("role", "progressbar");
-  progressTrack.setAttribute("aria-label", "Completed next steps");
-  progressTrack.setAttribute("aria-valuemin", "0");
-  progressTrack.setAttribute("aria-valuemax", String(answer.steps.length));
-  const progressFill = document.createElement("span");
-  progressFill.className = "progress-fill";
-  progressTrack.append(progressFill);
-  const stepsList = document.createElement("ol");
-  stepsList.className = "checklist";
-  const refreshProgress = () => {
-    const complete = answer.completed.filter(Boolean).length;
-    progressCount.textContent = `${complete}/${answer.steps.length} done`;
-    progressTrack.setAttribute("aria-valuenow", String(complete));
-    progressFill.style.width = `${answer.steps.length ? (complete / answer.steps.length) * 100 : 0}%`;
-  };
-  answer.steps.forEach((step, index) => {
-    const item = document.createElement("li");
-    item.className = "checklist-item";
-    const checkbox = document.createElement("input");
-    checkbox.id = `step-${answer.id}-${index}`;
-    checkbox.type = "checkbox";
-    checkbox.checked = Boolean(answer.completed[index]);
-    checkbox.setAttribute("aria-label", `Mark step ${index + 1} complete`);
-    const text = document.createElement("label");
-    text.htmlFor = checkbox.id;
-    text.textContent = step;
-    item.classList.toggle("is-complete", checkbox.checked);
-    checkbox.addEventListener("change", () => {
-      answer.completed[index] = checkbox.checked;
-      item.classList.toggle("is-complete", checkbox.checked);
-      refreshProgress();
-      persistAnswerProgress(answer);
-    });
-    item.append(checkbox, text);
-    stepsList.append(item);
-  });
-  stepsSection.append(progressHeading, progressTrack, stepsList);
-  refreshProgress();
-  answerContent.append(stepsSection);
-
-  if (answer.extra) {
-    const detail = document.createElement("section");
-    detail.className = "answer-section";
-    const detailHeading = document.createElement("h3");
-    detailHeading.textContent = "A little more context";
-    const detailText = document.createElement("p");
-    detailText.textContent = answer.extra;
-    detail.append(detailHeading, detailText);
-    answerContent.append(detail);
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "answer-actions";
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "save-button";
-  save.id = "save-answer";
-  save.textContent = isAnswerSaved(answer) ? "Saved to library" : "Save to library";
-  save.classList.toggle("is-saved", isAnswerSaved(answer));
-  save.addEventListener("click", saveCurrentAnswer);
-  const copy = document.createElement("button");
-  copy.type = "button";
-  copy.className = "copy-button";
-  copy.textContent = "Copy explanation";
-  copy.addEventListener("click", async () => {
-    const text = `${answer.heading}\n\n${answer.explanation}\n\n${answer.steps.map((step, index) => `${answer.completed[index] ? "[x]" : "[ ]"} ${index + 1}. ${step}`).join("\n")}`;
-    try {
-      await navigator.clipboard.writeText(text);
-      showToast("Steps copied to clipboard");
-    } catch {
-      showToast("Clipboard access is unavailable in this browser");
-    }
-  });
-  actions.append(save, copy);
-  answerContent.append(actions);
-
-  const disclaimer = document.createElement("p");
-  disclaimer.className = "answer-disclaimer";
-  disclaimer.textContent = "On-device first-pass read, not professional advice. Check important details against the original source.";
-  answerContent.append(disclaimer);
-}
-
-function isAnswerSaved(answer) {
-  return loadSaved().some((item) => item.id === answer.id);
-}
-
-function updateSaveButton(saved) {
-  const button = document.querySelector("#save-answer");
-  if (!button) return;
-  button.textContent = saved ? "Saved to library" : "Save to library";
-  button.classList.toggle("is-saved", saved);
-}
-
-function persistAnswerProgress(answer) {
-  const items = loadSaved();
-  const index = items.findIndex((item) => item.id === answer.id);
-  if (index < 0) return;
-  items[index] = answer;
-  try {
-    localStorage.setItem("clearstep-saved", JSON.stringify(items));
-    updateSavedList();
-  } catch {
-    showToast("Progress could not be saved in this browser");
-  }
-}
-
-function saveCurrentAnswer() {
-  if (!currentAnswer) return;
-  const items = loadSaved();
-  const existing = items.findIndex((item) => item.id === currentAnswer.id);
-  if (existing >= 0) items[existing] = currentAnswer;
-  else items.unshift(currentAnswer);
-  try {
-    localStorage.setItem("clearstep-saved", JSON.stringify(items.slice(0, 30)));
-    updateSavedList();
-    updateSaveButton(true);
-    showToast(existing >= 0 ? "Saved explanation updated" : "Saved on this device");
-  } catch {
-    showToast("Could not save in this browser");
-  }
+function setSearchState(state) {
+  const loading = state === "loading";
+  emptyState.hidden = loading || state === "results";
+  loadingState.hidden = !loading;
+  resultsList.hidden = loading || state === "empty";
+  resultsTools.hidden = loading || state === "empty";
+  resultsMeta.hidden = loading || state === "empty";
 }
 
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add("is-visible");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2300);
+  toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2600);
 }
 
-function updateCharacterCount() {
-  const text = sourceInput.value.trim();
-  const words = text ? text.split(/\s+/).length : 0;
-  document.querySelector("#char-count").textContent = `${words.toLocaleString()} ${words === 1 ? "word" : "words"} · ${sourceInput.value.length.toLocaleString()} characters`;
+function locationLabel(place) {
+  const address = place.address || {};
+  return address.city || address.town || address.municipality || address.village || address.county || place.name || place.displayName.split(",")[0];
 }
 
-function setSourceType(type) {
-  sourceType = type;
-  document.querySelectorAll(".source-tab").forEach((item) => {
-    const active = item.dataset.source === type;
-    item.classList.toggle("is-selected", active);
-    item.setAttribute("aria-pressed", String(active));
-  });
-  const isLink = type === "link";
-  document.querySelector("#link-field").hidden = !isLink;
-  document.querySelector("#link-note").hidden = !isLink;
-  sourceInput.setAttribute("aria-label", isLink ? "Text from the linked page to understand" : "Text to understand");
-  document.querySelector("#source-hint").textContent = isLink ? "Add the page text below" : "Paste or type something that feels unclear";
+function kmBetween(firstLat, firstLon, secondLat, secondLon) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const latitudeDelta = radians(secondLat - firstLat);
+  const longitudeDelta = radians(secondLon - firstLon);
+  const value = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(radians(firstLat)) * Math.cos(radians(secondLat)) * Math.sin(longitudeDelta / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
 }
 
-async function loadTextFile(file) {
-  if (!file) return;
-  if (!/\.(txt|md|markdown|log|csv|json)$/i.test(file.name) && !file.type.startsWith("text/")) {
-    showToast("Choose a text, Markdown, CSV, JSON, or log file");
-    return;
+function boundaryWidthKm(place) {
+  const [south, north, west, east] = place.boundingbox.map(Number);
+  return kmBetween(south, west, north, east);
+}
+
+function geocoderDelay() {
+  const delay = Math.max(0, 1100 - (Date.now() - lastGeocoderRequest));
+  return new Promise((resolve) => setTimeout(() => {
+    lastGeocoderRequest = Date.now();
+    resolve();
+  }, delay));
+}
+
+async function geocodeCity(query) {
+  const queryParts = query.split(",").map((part) => part.trim()).filter(Boolean);
+  if (queryParts.length < 2) throw new Error("Enter a city and country, for example Bogura, Bangladesh.");
+  const key = `clearstep-place-v1-${query.toLowerCase()}`;
+  try {
+    const cached = JSON.parse(sessionStorage.getItem(key) || "null");
+    if (cached && Date.now() - cached.fetchedAt < 86400000) return cached.place;
+  } catch {
+    // Continue with a live place lookup when session storage is unavailable.
   }
-  if (file.size > 1_000_000) {
-    showToast("Files must be smaller than 1 MB");
-    return;
+  await geocoderDelay();
+  const url = new URL(`${geocoderUrl}/search`);
+  url.search = new URLSearchParams({ format: "jsonv2", q: query, limit: "5", addressdetails: "1", "accept-language": "en" });
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error("The place search is busy. Please wait a moment and try again.");
+  const results = await response.json();
+  const boundaries = results.filter((result) => result.osm_type === "relation" && result.category === "boundary" && result.boundingbox);
+  const requestedCountry = queryParts.length > 1 ? queryParts[queryParts.length - 1].toLowerCase() : "";
+  const boundary = boundaries.find((result) => {
+    if (!requestedCountry) return true;
+    const address = result.address || {};
+    const aliases = { us: "united states", usa: "united states", uk: "united kingdom", gb: "united kingdom", uae: "united arab emirates" };
+    const expected = aliases[requestedCountry] || requestedCountry;
+    const actual = String(address.country || "").toLowerCase();
+    return (requestedCountry.length === 2 && address.country_code?.toLowerCase() === requestedCountry)
+      || actual === expected
+      || String(result.display_name || "").toLowerCase().includes(requestedCountry);
+  });
+  if (!boundary) throw new Error("We couldn't find that city in the selected country. Check the spelling or add a nearby city.");
+  const place = {
+    osmId: Number(boundary.osm_id),
+    name: locationLabel(boundary),
+    displayName: boundary.display_name,
+    lat: Number(boundary.lat),
+    lon: Number(boundary.lon),
+    boundingbox: boundary.boundingbox,
+    address: boundary.address || {},
+  };
+  if (boundaryWidthKm(place) > 180) throw new Error("That area is too broad. Search for a city or town inside it instead.");
+  try {
+    sessionStorage.setItem(key, JSON.stringify({ place, fetchedAt: Date.now() }));
+  } catch {
+    // Place search remains available when storage is unavailable.
+  }
+  return place;
+}
+
+function queryForPlace(place, category) {
+  const areaId = 3600000000 + place.osmId;
+  const tagPattern = categories[category].tags.join("|");
+  return `[out:json][timeout:25];(nwr["shop"~"^(${tagPattern})$"](area:${areaId}););out center meta;`;
+}
+
+function cacheKey(place, category) {
+  return `clearstep-osm-v1-${place.osmId}-${category}`;
+}
+
+function readCache(place, category) {
+  try {
+    const item = JSON.parse(sessionStorage.getItem(cacheKey(place, category)) || "null");
+    return item && Date.now() - item.fetchedAt < cacheDuration ? item : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(place, category, item) {
+  try {
+    sessionStorage.setItem(cacheKey(place, category), JSON.stringify(item));
+  } catch {
+    // Search still works when storage is unavailable.
+  }
+}
+
+async function fetchPlaces(place, category, forceRefresh) {
+  if (!forceRefresh) {
+    const cached = readCache(place, category);
+    if (cached) return { ...cached, cached: true };
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 35000);
+  try {
+    const url = new URL(overpassUrl);
+    url.searchParams.set("data", queryForPlace(place, category));
+    const response = await fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } });
+    if (response.status === 429) throw new Error("The open map service is busy right now. Wait a minute, then try again.");
+    if (response.status === 504) throw new Error("That search area is taking too long. Try a nearby city or search again later.");
+    if (!response.ok) throw new Error("The open map service couldn't complete this search. Please try again.");
+    const data = await response.json();
+    const item = { elements: data.elements || [], fetchedAt: Date.now() };
+    writeCache(place, category, item);
+    return { ...item, cached: false };
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("The map search took too long. Try again in a moment.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function elementPoint(element) {
+  const lat = Number(element.lat ?? element.center?.lat);
+  const lon = Number(element.lon ?? element.center?.lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+}
+
+function safeWebsite(value) {
+  if (!value) return "";
+  try {
+    const url = new URL(value.startsWith("http") ? value : `https://${value}`);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function makePlaces(elements, place, radiusKm, category) {
+  const primary = categories[category].primary;
+  return elements.map((element) => {
+    const point = elementPoint(element);
+    if (!point) return null;
+    const tags = element.tags || {};
+    const shopType = tags.shop || "shop";
+    const address = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+    return {
+      id: `${element.type}/${element.id}`,
+      osmType: element.type,
+      osmId: element.id,
+      name: String(tags.name || tags.brand || tags.operator || `Unnamed ${shopType.replaceAll("_", " ")} shop`),
+      shopType,
+      typeLabel: ({ mobile_phone: "Mobile phone shop", computer: "Computer shop", electronics: "Electronics shop" })[shopType] || "Retail shop",
+      address: String(tags["addr:full"] || address || tags["addr:suburb"] || tags["addr:neighbourhood"] || tags["addr:city"] || "Address not listed on map"),
+      phone: String(tags.phone || tags["contact:phone"] || ""),
+      website: safeWebsite(tags.website || tags["contact:website"]),
+      openingHours: String(tags.opening_hours || ""),
+      lat: point.lat,
+      lon: point.lon,
+      distance: kmBetween(place.lat, place.lon, point.lat, point.lon),
+      mapEditedAt: element.timestamp || "",
+      primaryMatch: shopType === primary ? 0 : 1,
+      origin: { name: place.name, lat: place.lat, lon: place.lon },
+    };
+  }).filter((item) => item && item.distance <= radiusKm)
+    .sort((first, second) => first.primaryMatch - second.primaryMatch || first.distance - second.distance);
+}
+
+function categoryIcon(type) {
+  return ({ mobile_phone: "▯", computer: "▱", electronics: "⌁" })[type] || "•";
+}
+
+function formatDistance(distance) {
+  if (!Number.isFinite(distance)) return "Saved shop";
+  return distance < 1 ? `${Math.round(distance * 1000)} m` : `${distance.toFixed(1)} km`;
+}
+
+function formatMapDate(timestamp) {
+  if (!timestamp) return "Edit date not listed";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Edit date not listed";
+  const days = Math.floor((Date.now() - date.getTime()) / 86400000);
+  if (days <= 0) return "Map entry edited today";
+  if (days === 1) return "Map entry edited yesterday";
+  if (days < 30) return `Map entry edited ${days} days ago`;
+  return `Map edit · ${date.toLocaleDateString(undefined, { month: "short", year: "numeric" })}`;
+}
+
+function osmObjectUrl(placeItem) {
+  return `https://www.openstreetmap.org/${encodeURIComponent(placeItem.osmType)}/${placeItem.osmId}`;
+}
+
+function makeElement(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined) element.textContent = text;
+  return element;
+}
+
+function directionsUrl(placeItem) {
+  const origin = placeItem.origin || currentPlace;
+  return `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${placeItem.lat}%2C${placeItem.lon}%3B${origin.lat}%2C${origin.lon}`;
+}
+
+function toggleSaved(placeItem, button) {
+  const saved = readSaved();
+  const index = saved.findIndex((item) => item.id === placeItem.id);
+  if (index >= 0) {
+    saved.splice(index, 1);
+    showToast("Removed from saved shops");
+  } else {
+    saved.unshift(placeItem);
+    showToast("Shop saved on this device");
   }
   try {
-    const text = await file.text();
-    if (text.length > 40000) {
-      showToast("This file is over the 40,000 character limit");
-      return;
-    }
-    sourceInput.value = text;
-    updateCharacterCount();
-    inputError.textContent = "";
-    showToast(`Added ${file.name}`);
-    sourceInput.focus();
+    localStorage.setItem("clearstep-shop-saves", JSON.stringify(saved.slice(0, 100)));
   } catch {
-    showToast("Could not read that file");
-  }
-}
-
-function useExample(name) {
-  const sample = samples[name] || samples.error;
-  sourceInput.value = sample.text;
-  sourceLink.value = "";
-  setSourceType("text");
-  selectedMode = sample.mode;
-  document.querySelectorAll(".mode-option").forEach((item) => {
-    const active = item.dataset.mode === selectedMode;
-    item.classList.toggle("is-selected", active);
-    item.setAttribute("aria-pressed", String(active));
-  });
-  updateCharacterCount();
-  showAnswer(makeAnswer(sample.text));
-}
-
-document.querySelectorAll(".mode-option").forEach((button) => {
-  button.addEventListener("click", () => {
-    selectedMode = button.dataset.mode;
-    document.querySelectorAll(".mode-option").forEach((item) => {
-      const active = item === button;
-      item.classList.toggle("is-selected", active);
-      item.setAttribute("aria-pressed", String(active));
-    });
-  });
-});
-
-document.querySelectorAll(".depth-option").forEach((button) => {
-  button.addEventListener("click", () => {
-    selectedDepth = Number(button.dataset.depth);
-    document.querySelectorAll(".depth-option").forEach((item) => {
-      const active = item === button;
-      item.classList.toggle("is-selected", active);
-      item.setAttribute("aria-pressed", String(active));
-    });
-    document.querySelector("#depth-description").textContent = depthDescriptions[selectedDepth];
-  });
-});
-
-document.querySelectorAll(".source-tab").forEach((button) => {
-  button.addEventListener("click", () => {
-    setSourceType(button.dataset.source);
-    sourceInput.focus();
-  });
-});
-
-sourceInput.addEventListener("input", () => {
-  updateCharacterCount();
-  inputError.textContent = "";
-});
-
-document.querySelector("#clear-input").addEventListener("click", () => {
-  sourceInput.value = "";
-  sourceLink.value = "";
-  updateCharacterCount();
-  inputError.textContent = "";
-  sourceInput.focus();
-});
-
-document.querySelector("#make-clear").addEventListener("click", () => {
-  const text = cleanText(sourceInput.value);
-  if (!text) {
-    inputError.textContent = "Add some text first.";
-    sourceInput.focus();
+    showToast("Could not save in this browser");
     return;
   }
-  let reference = "";
-  if (sourceLink.value.trim()) {
+  updateSavedCount();
+  button.classList.toggle("is-saved", index < 0);
+  button.textContent = index < 0 ? "★" : "☆";
+  button.setAttribute("aria-label", index < 0 ? `Remove ${placeItem.name} from saved shops` : `Save ${placeItem.name}`);
+  if (currentView === "saved" && index >= 0) renderSavedPlaces();
+}
+
+function makeShopCard(placeItem, index) {
+  const card = makeElement("article", "shop-card");
+  card.dataset.osmId = placeItem.id;
+  const marker = makeElement("span", "shop-number", String(index + 1));
+  const body = makeElement("div", "shop-main");
+  const top = makeElement("div", "shop-card-top");
+  const title = makeElement("h3", "shop-name", placeItem.name);
+  const isSaved = readSaved().some((item) => item.id === placeItem.id);
+  const saveButton = makeElement("button", `favorite-button${isSaved ? " is-saved" : ""}`, isSaved ? "★" : "☆");
+  saveButton.type = "button";
+  saveButton.title = isSaved ? "Remove from saved shops" : "Save shop";
+  saveButton.setAttribute("aria-label", isSaved ? `Remove ${placeItem.name} from saved shops` : `Save ${placeItem.name}`);
+  saveButton.addEventListener("click", () => toggleSaved(placeItem, saveButton));
+  top.append(title, saveButton);
+  const detail = makeElement("div", "shop-meta");
+  detail.append(makeElement("span", "shop-type", `${categoryIcon(placeItem.shopType)} ${placeItem.typeLabel}`));
+  detail.append(makeElement("span", "shop-distance", formatDistance(placeItem.distance)));
+  body.append(top, detail);
+  body.append(makeElement("p", "shop-address", placeItem.address));
+  if (placeItem.openingHours) body.append(makeElement("p", "shop-hours", `Mapped hours · ${placeItem.openingHours}`));
+  body.append(makeElement("p", "shop-map-date", formatMapDate(placeItem.mapEditedAt)));
+
+  const actions = makeElement("div", "shop-actions");
+  if (placeItem.phone) {
+    const phone = makeElement("a", "shop-action", "Call shop");
+    phone.href = `tel:${placeItem.phone.replace(/[^+\d]/g, "")}`;
+    actions.append(phone);
+  }
+  const directions = makeElement("a", "shop-action secondary-action", "Directions ↗");
+  directions.href = directionsUrl(placeItem);
+  directions.target = "_blank";
+  directions.rel = "noopener noreferrer";
+  actions.append(directions);
+  if (placeItem.website) {
+    const website = makeElement("a", "shop-action secondary-action", "Website ↗");
+    website.href = placeItem.website;
+    website.target = "_blank";
+    website.rel = "noopener noreferrer";
+    actions.append(website);
+  }
+  const source = makeElement("a", "shop-source", "View map record");
+  source.href = osmObjectUrl(placeItem);
+  source.target = "_blank";
+  source.rel = "noopener noreferrer";
+  source.title = "Open this shop's OpenStreetMap record to verify or suggest an edit";
+  actions.append(source);
+  body.append(actions);
+  card.append(marker, body);
+  card.addEventListener("mouseenter", () => highlightMarker(index));
+  card.addEventListener("focusin", () => highlightMarker(index));
+  return card;
+}
+
+function markerPopup(placeItem) {
+  const popup = document.createElement("div");
+  popup.className = "map-popup";
+  popup.append(makeElement("strong", "", placeItem.name), makeElement("span", "", placeItem.typeLabel));
+  const link = makeElement("a", "", "Open map record ↗");
+  link.href = osmObjectUrl(placeItem);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  popup.append(link);
+  return popup;
+}
+
+function ensureMap() {
+  if (map) return;
+  map = L.map("map-canvas", { scrollWheelZoom: false, zoomControl: true }).setView([20, 0], 2);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>',
+  }).addTo(map);
+  markerLayer = L.featureGroup().addTo(map);
+}
+
+function showMap(place, places) {
+  try {
+    ensureMap();
+  } catch {
+    mapPlaceLabel.textContent = locationLabel(place);
+    mapPlaceholder.replaceChildren(makeElement("span", "map-load-error", "Map unavailable. Shop listings are still shown."));
+    mapPlaceholder.hidden = false;
+    mapPlaceholder.setAttribute("aria-hidden", "false");
+    return;
+  }
+  mapPlaceholder.hidden = true;
+  mapPlaceLabel.textContent = locationLabel(place);
+  markerLayer.clearLayers();
+  currentMarkers = [];
+  if (currentView === "nearby") L.circle([place.lat, place.lon], { radius: Number(radiusSelect.value) * 1000, color: "#718c43", weight: 1, fillColor: "#d9edaa", fillOpacity: .16, dashArray: "5 6" }).addTo(markerLayer);
+  places.forEach((placeItem, index) => {
+    const icon = L.divIcon({ className: "shop-marker-wrap", html: `<span class="shop-marker"><span>${index + 1}</span></span>`, iconSize: [30, 36], iconAnchor: [15, 33] });
+    const marker = L.marker([placeItem.lat, placeItem.lon], { icon }).bindPopup(markerPopup(placeItem));
+    marker.addTo(markerLayer);
+    currentMarkers.push(marker);
+  });
+  const bounds = markerLayer.getBounds();
+  if (bounds.isValid()) map.fitBounds(bounds.pad(.16), { maxZoom: 15 });
+  else map.setView([place.lat, place.lon], 13);
+  window.setTimeout(() => map.invalidateSize(), 80);
+}
+
+function highlightMarker(index) {
+  currentMarkers.forEach((marker, markerIndex) => marker.setZIndexOffset(markerIndex === index ? 500 : 0));
+}
+
+function addMissingShopLink(place) {
+  const link = makeElement("a", "add-shop-link", "Add a missing shop to OpenStreetMap ↗");
+  link.href = `https://www.openstreetmap.org/edit#map=17/${place.lat}/${place.lon}`;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  return link;
+}
+
+function setViewButtons() {
+  const savedButton = document.querySelector("#saved-nav");
+  savedButton.classList.toggle("is-active", currentView === "saved");
+  savedButton.setAttribute("aria-pressed", String(currentView === "saved"));
+}
+
+function renderPlaces(places, place, fetchedAt, cached) {
+  currentResults = places;
+  resultsList.replaceChildren();
+  const count = places.length;
+  const radius = Number(radiusSelect.value);
+  resultsTitle.textContent = currentView === "saved" ? "Your saved shops." : count ? `${count} ${count === 1 ? "place" : "places"} near ${place.name}.` : "No mapped shops in this radius.";
+  resultsMeta.textContent = currentView === "saved"
+    ? `${count} saved ${count === 1 ? "shop" : "shops"} · stored on this device`
+    : `${categories[selectedCategory].label} · within ${radius} km of ${place.name} · ${cached ? "recent search" : "map checked"} ${new Date(fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  setSearchState("results");
+
+  if (!count) {
+    const noResults = makeElement("div", "no-results");
+    noResults.append(makeElement("h3", "", currentView === "saved" ? "No saved shops yet." : "No mapped shops found nearby."));
+    noResults.append(makeElement("p", "", currentView === "saved" ? "Save a shop with the star to keep it here." : "The map may not have listings for this category yet. Try a wider radius or add a missing shop to OpenStreetMap."));
+    if (currentView !== "saved") {
+      const expand = makeElement("button", "example-search", "Expand to next radius ↗");
+      expand.type = "button";
+      expand.addEventListener("click", expandRadius);
+      noResults.append(expand, addMissingShopLink(place));
+    }
+    resultsList.append(noResults);
+  } else {
+    places.forEach((placeItem, index) => resultsList.append(makeShopCard(placeItem, index)));
+  }
+  if (place) showMap(place, places);
+}
+
+function expandRadius() {
+  const next = [...radiusSelect.options].map((option) => Number(option.value)).find((radius) => radius > Number(radiusSelect.value));
+  if (!next) return showToast("Already showing the widest radius");
+  radiusSelect.value = String(next);
+  const cached = currentPlace && readCache(currentPlace, selectedCategory);
+  if (cached) {
+    nearbyResults = makePlaces(cached.elements, currentPlace, next, selectedCategory);
+    nearbyFetchedAt = cached.fetchedAt;
+    nearbyCached = true;
+    renderPlaces(nearbyResults, currentPlace, nearbyFetchedAt, nearbyCached);
+  } else {
+    searchForm.requestSubmit();
+  }
+}
+
+async function runSearch(forceRefresh = false) {
+  if (activeRequest) return;
+  const query = locationInput.value.trim();
+  if (!query) {
+    locationInput.focus();
+    searchError.textContent = "Enter a city and country to keep results in the right place.";
+    searchError.hidden = false;
+    return;
+  }
+  activeRequest = true;
+  searchError.hidden = true;
+  searchError.textContent = "";
+  searchButton.disabled = true;
+  searchButton.querySelector("span:first-child").textContent = "Searching…";
+  document.querySelector("#loading-place").textContent = query;
+  resultsList.replaceChildren();
+  setSearchState("loading");
+  try {
+    const place = await geocodeCity(query);
+    currentPlace = place;
+    const fetched = await fetchPlaces(place, selectedCategory, forceRefresh);
+    const places = makePlaces(fetched.elements, place, Number(radiusSelect.value), selectedCategory);
+    nearbyResults = places;
+    nearbyFetchedAt = fetched.fetchedAt;
+    nearbyCached = fetched.cached;
+    currentView = "nearby";
+    setViewButtons();
+    renderPlaces(places, place, fetched.fetchedAt, fetched.cached);
+  } catch (error) {
+    resultsList.replaceChildren();
+    resultsTitle.textContent = "We couldn't finish that search.";
+    resultsMeta.textContent = "Check the place name or try again shortly.";
+    resultsMeta.hidden = false;
+    resultsTools.hidden = true;
+    emptyState.hidden = true;
+    loadingState.hidden = true;
+    resultsList.hidden = false;
+    const failure = makeElement("p", "search-failure", error.message || "Something went wrong. Please try again.");
+    resultsList.append(failure);
+    if (currentPlace) showMap(currentPlace, []);
+  } finally {
+    activeRequest = false;
+    searchButton.disabled = false;
+    searchButton.querySelector("span:first-child").textContent = "Find nearby";
+  }
+}
+
+function renderSavedPlaces() {
+  currentView = "saved";
+  setViewButtons();
+  const saved = readSaved();
+  const place = currentPlace || saved[0]?.origin;
+  renderPlaces(saved, place, Date.now(), false);
+  if (!place) resultsMeta.textContent = `${saved.length} saved ${saved.length === 1 ? "shop" : "shops"} · stored on this device`;
+}
+
+function reverseLookup(lat, lon) {
+  return geocoderDelay().then(async () => {
+    const url = new URL(`${geocoderUrl}/reverse`);
+    url.search = new URLSearchParams({ format: "jsonv2", lat: String(lat), lon: String(lon), zoom: "10", addressdetails: "1", "accept-language": "en" });
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) throw new Error("Could not identify your city from that location.");
+    return response.json();
+  });
+}
+
+function useCurrentLocation() {
+  if (!navigator.geolocation) return showToast("Location sharing is not available in this browser");
+  const button = document.querySelector("#location-button");
+  button.disabled = true;
+  button.querySelector("span:last-child").textContent = "Finding your area…";
+  navigator.geolocation.getCurrentPosition(async ({ coords }) => {
     try {
-      const parsed = new URL(sourceLink.value.trim());
-      if (!/^https?:$/.test(parsed.protocol)) throw new Error("Unsupported protocol");
-      reference = parsed.href;
-    } catch {
-      inputError.textContent = "Enter a valid http or https link.";
-      sourceLink.focus();
-      return;
+      const result = await reverseLookup(coords.latitude, coords.longitude);
+      const address = result.address || {};
+      const locality = address.city || address.town || address.municipality || address.village || address.county;
+      if (!locality || !address.country) throw new Error("Could not identify your city. Enter it manually instead.");
+      locationInput.value = [locality, address.state, address.country].filter(Boolean).join(", ");
+      await runSearch();
+    } catch (error) {
+      showToast(error.message || "Could not identify your location");
+    } finally {
+      button.disabled = false;
+      button.querySelector("span:last-child").textContent = "Use my location";
     }
-  }
-  if (sourceType === "link" && !reference) {
-    inputError.textContent = "Add a page link, or switch back to Text.";
-    sourceLink.focus();
-    return;
-  }
-  if (sourceType === "link" && !text) {
-    inputError.textContent = "Paste the page text too; links are kept as a reference, not fetched.";
-    sourceInput.focus();
-    return;
-  }
-  inputError.textContent = "";
-  showAnswer(makeAnswer(sourceInput.value, reference));
+  }, (error) => {
+    button.disabled = false;
+    button.querySelector("span:last-child").textContent = "Use my location";
+    showToast(error.code === error.PERMISSION_DENIED ? "Location permission was declined. Enter a city instead." : "Could not get your location. Enter a city instead.");
+  }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
+}
+
+document.querySelectorAll(".category-option").forEach((button) => {
+  button.addEventListener("click", () => setCategory(button.dataset.category));
 });
 
-document.querySelector("#try-sample").addEventListener("click", () => {
-  useExample("error");
-});
-
-document.querySelectorAll(".example-chip").forEach((button) => {
-  button.addEventListener("click", () => useExample(button.dataset.example));
-});
-
-document.querySelector("#file-input").addEventListener("change", (event) => {
-  loadTextFile(event.target.files[0]);
-  event.target.value = "";
-});
-
-sourceBox.addEventListener("dragover", (event) => {
+searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  sourceBox.classList.add("is-dragging");
+  runSearch();
 });
-sourceBox.addEventListener("dragleave", (event) => {
-  if (!sourceBox.contains(event.relatedTarget)) sourceBox.classList.remove("is-dragging");
+document.querySelector("#location-button").addEventListener("click", useCurrentLocation);
+document.querySelector("#example-search").addEventListener("click", () => {
+  locationInput.value = "Bogura, Bangladesh";
+  runSearch();
 });
-sourceBox.addEventListener("drop", (event) => {
-  event.preventDefault();
-  sourceBox.classList.remove("is-dragging");
-  loadTextFile(event.dataTransfer.files[0]);
+document.querySelector("#refresh-button").addEventListener("click", () => runSearch(true));
+document.querySelector("#sort-select").addEventListener("change", (event) => {
+  const sorted = [...currentResults];
+  if (event.target.value === "recent") sorted.sort((first, second) => new Date(second.mapEditedAt || 0) - new Date(first.mapEditedAt || 0));
+  else if (event.target.value === "distance") sorted.sort((first, second) => (first.distance ?? Infinity) - (second.distance ?? Infinity));
+  else sorted.sort((first, second) => (first.primaryMatch ?? 0) - (second.primaryMatch ?? 0) || (first.distance ?? Infinity) - (second.distance ?? Infinity));
+  if (currentView === "nearby") nearbyResults = sorted;
+  renderPlaces(sorted, currentPlace, currentView === "nearby" ? nearbyFetchedAt : Date.now(), currentView === "nearby" ? nearbyCached : true);
 });
-
-document.querySelector("#paste-input").addEventListener("click", async () => {
-  try {
-    sourceInput.value = await navigator.clipboard.readText();
-    updateCharacterCount();
-    inputError.textContent = "";
-    sourceInput.focus();
-  } catch {
-    showToast("Clipboard access is unavailable; paste with your keyboard instead");
+document.querySelector("#saved-nav").addEventListener("click", () => {
+  if (currentView === "saved") {
+    currentView = "nearby";
+    setViewButtons();
+    if (currentPlace) renderPlaces(nearbyResults, currentPlace, nearbyFetchedAt, nearbyCached);
+    else {
+      resultsTitle.textContent = "A good place to start.";
+      setSearchState("empty");
+    }
+  } else {
+    renderSavedPlaces();
+  }
+});
+radiusSelect.addEventListener("change", () => {
+  if (currentView !== "nearby" || !currentPlace) return;
+  const cached = readCache(currentPlace, selectedCategory);
+  if (cached) {
+    nearbyResults = makePlaces(cached.elements, currentPlace, Number(radiusSelect.value), selectedCategory);
+    nearbyFetchedAt = cached.fetchedAt;
+    nearbyCached = true;
+    renderPlaces(nearbyResults, currentPlace, nearbyFetchedAt, nearbyCached);
   }
 });
 
-document.querySelector("#saved-nav").addEventListener("click", openSavedLibrary);
-document.querySelector("#close-saved").addEventListener("click", closeSavedLibrary);
-document.querySelector("#saved-search").addEventListener("input", (event) => renderSavedLibrary(event.target.value));
-savedDialog.addEventListener("click", (event) => {
-  if (event.target === savedDialog) closeSavedLibrary();
-});
-document.querySelector("#workspace-nav").addEventListener("click", () => {
-  document.querySelector("#workspace-nav").classList.add("is-active");
-  document.querySelector("#saved-nav").classList.remove("is-active");
-  sourceInput.focus();
-});
-document.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-    event.preventDefault();
-    document.querySelector("#make-clear").click();
-  }
-});
-
-updateSavedList();
+updateSavedCount();

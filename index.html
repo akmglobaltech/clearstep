@@ -3,152 +3,116 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f4f7f1" />
-    <meta name="description" content="Turn unfamiliar information into clear, useful next steps." />
-    <title>Clearstep — Make the unfamiliar actionable</title>
+    <meta name="theme-color" content="#f3f6ef" />
+    <meta name="description" content="Find locally mapped phone, laptop, and accessory shops near your city." />
+    <title>Clearstep — Find it in your city</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <link rel="stylesheet" href="styles.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Main navigation">
-        <a class="brand" href="#workspace" aria-label="Clearstep home">
-          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <header class="topbar">
+        <a class="brand" href="#top" aria-label="Clearstep home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>clearstep</span>
         </a>
-
-        <div class="side-label">YOUR SPACE</div>
-        <button class="nav-item is-active" id="workspace-nav" type="button" aria-current="page">
-          <span class="nav-glyph" aria-hidden="true">⌘</span> Workspace
-        </button>
-        <button class="nav-item" id="saved-nav" type="button">
-          <span class="nav-glyph bookmark-glyph" aria-hidden="true">▱</span> Saved
-          <span class="saved-count" id="saved-count">0</span>
-        </button>
-
-        <div class="sidebar-divider"></div>
-        <div class="side-label recent-label">RECENT</div>
-        <div class="recent-list" id="recent-list" aria-live="polite">
-          <p class="empty-recent">Your saved explanations<br />will show up here.</p>
+        <div class="topbar-right">
+          <span class="data-status"><span></span> OPEN MAP DATA</span>
+          <button class="saved-nav" id="saved-nav" type="button" aria-pressed="false"><span aria-hidden="true">☆</span> Saved <span class="saved-count" id="saved-count">0</span></button>
         </div>
+      </header>
 
-        <div class="sidebar-bottom">
-          <span class="privacy-mark" aria-hidden="true">●</span>
-          <span>Stays on this device</span>
-        </div>
-      </aside>
+      <main id="top">
+        <section class="hero" aria-labelledby="page-title">
+          <div class="hero-copy">
+            <div class="eyebrow"><span></span> LOCAL FINDS, CLEARER CHOICES</div>
+            <h1 id="page-title">Find it <em>in your city.</em></h1>
+            <p>Discover nearby shops for the tech you need. Start with a product category and a place.</p>
+          </div>
+          <div class="hero-aside"><span class="hero-aside-mark" aria-hidden="true">↗</span><span>Real places.<br />On the map.</span></div>
+        </section>
 
-      <main class="main-area" id="workspace">
-        <header class="topbar">
-          <div class="breadcrumb"><span>Workspace</span><span class="breadcrumb-slash">/</span><span class="breadcrumb-current" id="breadcrumb-current">New explanation</span></div>
-          <div class="topbar-right"><span class="local-badge"><span></span> PRIVATE BY DESIGN</span><span class="keyboard-hint"><kbd>⌘</kbd><kbd>↵</kbd> to clarify</span></div>
-        </header>
-
-        <div class="content-wrap">
-          <section class="intro" aria-labelledby="page-title">
-            <div class="eyebrow"><span class="eyebrow-line"></span> YOUR THINKING, UNBLOCKED</div>
-            <h1 id="page-title">Turn unclear into<br class="desktop-break" /> <em>next steps.</em></h1>
-            <p>Start with an error, a message, or an instruction that needs making sense of.</p>
-          </section>
-
-          <section class="workbench" aria-label="Create an explanation">
-            <div class="input-column">
-              <div class="section-heading">
-                <span class="step-number">01</span>
-                <div><h2>Bring the source</h2><p>Paste text, add a link, or drop in a text file.</p></div>
-              </div>
-
-              <div class="source-box" id="source-box">
-                <div class="source-toolbar">
-                  <div class="source-type" aria-label="Source type">
-                    <button type="button" class="source-tab is-selected" data-source="text" aria-pressed="true">Text</button>
-                    <button type="button" class="source-tab" data-source="link" aria-pressed="false">Link</button>
-                  </div>
-                    <span class="source-hint" id="source-hint">Paste or type something that feels unclear</span>
-                  <label class="file-button" for="file-input" title="Add a text, Markdown, or log file"><span aria-hidden="true">＋</span> Add file</label>
-                </div>
-                <div class="link-field" id="link-field" hidden>
-                  <label for="source-link">PAGE LINK</label>
-                  <input id="source-link" type="url" placeholder="https://example.com/page" autocomplete="url" />
-                </div>
-                <textarea id="source-input" placeholder="Paste an error, confusing message, or instructions…" aria-label="Text to understand" spellcheck="false" maxlength="40000"></textarea>
-                <div class="drop-hint" id="drop-hint"><span aria-hidden="true">↳</span> Drop a .txt, .md, or .log file here, or <button type="button" id="paste-input">paste from clipboard</button></div>
-                <div class="source-footer">
-                  <span id="char-count">0 words · 0 characters</span>
-                  <button type="button" class="text-button" id="clear-input" aria-label="Clear input">Clear <span aria-hidden="true">×</span></button>
-                </div>
-              </div>
-              <input id="file-input" type="file" accept=".txt,.md,.markdown,.log,.csv,.json,text/plain,text/markdown" hidden />
-              <div class="link-note" id="link-note" hidden>Pages aren’t fetched. Add the link as a reference, then paste the relevant text above.</div>
-
-              <div class="examples-row" aria-label="Try a starting point">
-                <span>TRY</span>
-                <button type="button" class="example-chip" data-example="error">Connection error</button>
-                <button type="button" class="example-chip" data-example="notice">A confusing notice</button>
-                <button type="button" class="example-chip" data-example="steps">A set of instructions</button>
-              </div>
-
-              <div class="mode-section">
-                <div class="field-label">WHAT WOULD HELP MOST?</div>
-                <div class="mode-picker" role="group" aria-label="What would help most?">
-                  <button type="button" class="mode-option is-selected" data-mode="explain" aria-pressed="true">
-                    <span class="mode-symbol explain-symbol" aria-hidden="true">Aa</span>
-                    <span><strong>Explain it</strong><small>Make it make sense</small></span>
-                  </button>
-                  <button type="button" class="mode-option" data-mode="fix" aria-pressed="false">
-                    <span class="mode-symbol fix-symbol" aria-hidden="true">⌁</span>
-                    <span><strong>Help me fix it</strong><small>Find a way through</small></span>
-                  </button>
-                  <button type="button" class="mode-option" data-mode="next" aria-pressed="false">
-                    <span class="mode-symbol next-symbol" aria-hidden="true">→</span>
-                    <span><strong>What to do next</strong><small>Get a clear sequence</small></span>
-                  </button>
-                </div>
-              </div>
-
-              <div class="depth-row">
-                <div><div class="field-label">EXPLANATION DEPTH</div><div class="depth-description" id="depth-description">Simple words, no assumed knowledge</div></div>
-                <div class="depth-control" role="group" aria-label="Explanation depth">
-                  <button type="button" data-depth="0" class="depth-option is-selected" aria-pressed="true">Plain</button>
-                  <button type="button" data-depth="1" class="depth-option" aria-pressed="false">Balanced</button>
-                  <button type="button" data-depth="2" class="depth-option" aria-pressed="false">Detailed</button>
-                </div>
-              </div>
-
-              <div class="action-row">
-                <span class="input-error" id="input-error" role="status"></span>
-                <button type="button" class="primary-button" id="make-clear"><span>Make it clear</span><span class="button-arrow" aria-hidden="true">↗</span></button>
-              </div>
-              <div class="privacy-note"><span class="privacy-icon" aria-hidden="true">●</span> Your text stays in this browser. Nothing is uploaded.</div>
+        <section class="search-panel" aria-label="Find a local shop">
+          <form id="search-form">
+            <div class="search-label-row"><label class="field-label" for="location-input">WHAT ARE YOU LOOKING FOR?</label><span class="source-private"><span aria-hidden="true">●</span> No account needed</span></div>
+            <div class="category-picker" role="group" aria-label="Product category">
+              <button type="button" class="category-option is-active" data-category="phones" aria-pressed="true"><span class="category-icon phone-icon" aria-hidden="true">▯</span><span>Phones</span></button>
+              <button type="button" class="category-option" data-category="laptops" aria-pressed="false"><span class="category-icon laptop-icon" aria-hidden="true">▱</span><span>Laptops</span></button>
+              <button type="button" class="category-option" data-category="accessories" aria-pressed="false"><span class="category-icon accessory-icon" aria-hidden="true">⌁</span><span>Accessories</span></button>
             </div>
 
-            <div class="answer-column" id="answer-panel" aria-live="polite" aria-label="Explanation">
-              <div class="answer-topline"><span class="step-number">02</span><span class="answer-kicker">YOUR CLEARER PICTURE</span></div>
-              <div class="empty-answer" id="empty-answer">
-                <div class="answer-illustration" aria-hidden="true"><span class="orbit orbit-one"></span><span class="orbit orbit-two"></span><span class="note note-back"></span><span class="note note-front"><i></i><i></i><i></i></span><span class="spark">✳</span></div>
-                <h2>A clearer picture, right here.</h2>
-                <p>Your source, a plain-language read, and a useful next move will come together here.</p>
-                <button type="button" class="sample-button" id="try-sample">Run the connection-error example <span aria-hidden="true">↗</span></button>
+            <div class="search-fields">
+              <div class="field location-field">
+                <label for="location-input"><span class="input-symbol" aria-hidden="true">⌖</span> CITY + COUNTRY</label>
+                <input id="location-input" type="search" placeholder="e.g. Bogura, Bangladesh" autocomplete="off" required />
               </div>
-              <div class="answer-content" id="answer-content" hidden></div>
+              <button class="current-location" id="location-button" type="button" title="Use your current location"><span aria-hidden="true">◎</span><span>Use my location</span></button>
+              <div class="field radius-field">
+                <label for="radius-select">WITHIN</label>
+                <select id="radius-select" aria-label="Search radius">
+                  <option value="3">3 km</option>
+                  <option value="5">5 km</option>
+                  <option value="10" selected>10 km</option>
+                  <option value="20">20 km</option>
+                </select>
+              </div>
+              <button class="search-button" id="search-button" type="submit"><span>Find nearby</span><span aria-hidden="true">↗</span></button>
             </div>
-          </section>
-          <footer class="page-footer"><span>Clearstep</span><span>Less stuck. More sure.</span></footer>
-        </div>
+            <p class="search-privacy"><span aria-hidden="true">↳</span> Your location is only used when you search. Choose a city, or share your location.</p>
+            <p class="search-error" id="search-error" role="alert" hidden></p>
+          </form>
+        </section>
+
+        <section class="results-section" aria-label="Local shop results">
+          <div class="results-heading">
+            <div><div class="eyebrow results-eyebrow"><span></span> YOUR LOCAL SHORTLIST</div><h2 id="results-title">A good place to start.</h2></div>
+            <div class="results-tools" id="results-tools" hidden>
+              <label class="sort-control"><span>SORT</span><select id="sort-select" aria-label="Sort shops"><option value="match" selected>Best match</option><option value="distance">Nearest</option><option value="recent">Recently mapped</option></select></label>
+              <button class="refresh-button" id="refresh-button" type="button" title="Refresh map data"><span aria-hidden="true">↻</span><span>Refresh</span></button>
+            </div>
+          </div>
+
+          <div class="results-meta" id="results-meta" hidden aria-live="polite"></div>
+          <div class="results-layout">
+            <div class="results-column">
+              <div class="empty-state" id="empty-state">
+                <div class="empty-map-mark" aria-hidden="true"><span class="map-road road-a"></span><span class="map-road road-b"></span><span class="map-pin"></span></div>
+                <h3>Start with a place you know.</h3>
+                <p>Type a city and country to see shops mapped within its boundary. Try Bogura, Bangladesh.</p>
+                <button type="button" class="example-search" id="example-search">Search Bogura <span aria-hidden="true">↗</span></button>
+              </div>
+              <div class="loading-state" id="loading-state" hidden aria-live="polite">
+                <div class="loading-label"><span class="loading-dot"></span> Finding mapped shops near <strong id="loading-place">your city</strong></div>
+                <div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div>
+              </div>
+              <div class="results-list" id="results-list" aria-live="polite"></div>
+            </div>
+            <aside class="map-panel" aria-label="Map of local shops">
+              <div class="map-topline"><span><span class="map-live-dot"></span> MAP VIEW</span><span id="map-place-label">Waiting for a place</span></div>
+              <div class="map-canvas" id="map-canvas">
+                <div class="map-placeholder" id="map-placeholder" aria-hidden="true">
+                  <div class="map-contour contour-one"></div><div class="map-contour contour-two"></div><div class="placeholder-pin">⌖</div>
+                  <span>Nearby places will show here</span>
+                </div>
+              </div>
+              <div class="map-legend"><span><i class="legend-dot"></i> Mapped shop</span><span>Map data by OpenStreetMap</span></div>
+            </aside>
+          </div>
+          <div class="data-note"><span class="data-note-mark" aria-hidden="true">i</span><p>OpenStreetMap helps locate shops; it does not confirm today's stock or prices. Call ahead for availability. Each result shows when its map entry was last edited.</p></div>
+        </section>
       </main>
+
+      <footer class="site-footer">
+        <a class="footer-brand" href="#top">clearstep</a>
+        <span>Built on open map data. Made for finding things nearby.</span>
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>
+      </footer>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <dialog class="saved-dialog" id="saved-dialog" aria-labelledby="saved-title">
-      <div class="saved-dialog-head">
-        <div><div class="eyebrow"><span class="eyebrow-line"></span> YOUR LIBRARY</div><h2 id="saved-title">Saved explanations</h2></div>
-        <button type="button" class="dialog-close" id="close-saved" aria-label="Close saved explanations">×</button>
-      </div>
-      <label class="saved-search"><span aria-hidden="true">⌕</span><input id="saved-search" type="search" placeholder="Search your saved explanations" /></label>
-      <div class="saved-results" id="saved-results" aria-live="polite"></div>
-      <div class="saved-dialog-foot"><span>Saved on this device only</span><span id="saved-total">0 saved</span></div>
-    </dialog>
   </body>
 </html>
